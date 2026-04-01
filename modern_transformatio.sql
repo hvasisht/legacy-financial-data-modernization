@@ -1,0 +1,456 @@
+USE DATABASE BANK_DB;
+-- Create error log table
+CREATE TABLE IF NOT EXISTS BANK_DB.PUBLIC.ERROR_LOG (
+    ERROR_ID NUMBER AUTOINCREMENT,
+    ERROR_DT TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+    SOURCE_TABLE VARCHAR,
+    RECORD_ID VARCHAR,
+    ERROR_TYPE VARCHAR,
+    ERROR_MSG VARCHAR,
+    RAW_VALUE VARCHAR,
+    STATUS VARCHAR DEFAULT 'UNRESOLVED'
+);
+
+--------------------------------------------------------------------------
+---------------------NULL employee names
+INSERT INTO BANK_DB.PUBLIC.ERROR_LOG 
+(SOURCE_TABLE, RECORD_ID, ERROR_TYPE, ERROR_MSG, RAW_VALUE)
+SELECT 'EMPLOYEES', EMP_ID, 'NULL_VALUE', 
+       'Employee name is NULL', 'EMP_NM = NULL'
+FROM BANK_DB.PUBLIC.EMPLOYEES
+WHERE EMP_NM IS NULL;
+
+-- NULL salaries
+INSERT INTO BANK_DB.PUBLIC.ERROR_LOG 
+(SOURCE_TABLE, RECORD_ID, ERROR_TYPE, ERROR_MSG, RAW_VALUE)
+SELECT 'EMPLOYEES', EMP_ID, 'NULL_VALUE',
+       'Salary is NULL', 'SAL = NULL'
+FROM BANK_DB.PUBLIC.EMPLOYEES
+WHERE SAL IS NULL;
+
+-- Negative balances
+INSERT INTO BANK_DB.PUBLIC.ERROR_LOG 
+(SOURCE_TABLE, RECORD_ID, ERROR_TYPE, ERROR_MSG, RAW_VALUE)
+SELECT 'ACCOUNTS', ACCT_NUM, 'INVALID_VALUE',
+       'Negative balance found', 'BAL = '||BAL
+FROM BANK_DB.PUBLIC.ACCOUNTS
+WHERE BAL < 0;
+
+-- NULL customer names
+INSERT INTO BANK_DB.PUBLIC.ERROR_LOG 
+(SOURCE_TABLE, RECORD_ID, ERROR_TYPE, ERROR_MSG, RAW_VALUE)
+SELECT 'CUSTOMERS', CUST_ID, 'NULL_VALUE',
+       'Customer name is NULL', 'CUST_NM = NULL'
+FROM BANK_DB.PUBLIC.CUSTOMERS
+WHERE CUST_NM IS NULL;
+
+-- NULL transaction amounts
+INSERT INTO BANK_DB.PUBLIC.ERROR_LOG 
+(SOURCE_TABLE, RECORD_ID, ERROR_TYPE, ERROR_MSG, RAW_VALUE)
+SELECT 'TRANSACTIONS', TXN_ID, 'NULL_VALUE',
+       'Transaction amount is NULL', 'AMT = NULL'
+FROM BANK_DB.PUBLIC.TRANSACTIONS
+WHERE AMT IS NULL;
+
+-- Create modern schema
+CREATE SCHEMA IF NOT EXISTS BANK_DB.MODERN_SCHEMA;
+
+-- Create dim_employee
+CREATE TABLE BANK_DB.MODERN_SCHEMA.DIM_EMPLOYEE (
+    EMPLOYEE_ID VARCHAR,
+    FIRST_NAME VARCHAR,
+    LAST_NAME VARCHAR,
+    DATE_OF_BIRTH DATE,
+    GENDER VARCHAR,
+    EMAIL VARCHAR,
+    DEPARTMENT_ID VARCHAR,
+    DEPARTMENT_NAME VARCHAR,
+    JOB_STATUS VARCHAR,
+    SALARY FLOAT,
+    JOIN_DATE DATE,
+    MANAGER_ID VARCHAR
+);
+
+-----------------------------------------------------------
+------Create dim_customer
+CREATE TABLE BANK_DB.MODERN_SCHEMA.DIM_CUSTOMER (
+    CUSTOMER_ID VARCHAR,
+    FIRST_NAME VARCHAR,
+    LAST_NAME VARCHAR,
+    DATE_OF_BIRTH DATE,
+    COUNTRY_CODE VARCHAR,
+    PHONE_NUMBER VARCHAR,
+    EMAIL VARCHAR,
+    KYC_VERIFIED VARCHAR,
+    SEGMENT VARCHAR,
+    JOINED_DATE DATE,
+    STATUS VARCHAR,
+    COMPLIANCE_STATUS VARCHAR,
+    RISK_SCORE INTEGER
+);
+
+-- Create fact_account
+CREATE TABLE BANK_DB.MODERN_SCHEMA.FACT_ACCOUNT (
+    ACCOUNT_ID VARCHAR,
+    CUSTOMER_ID VARCHAR,
+    ACCOUNT_TYPE VARCHAR,
+    BALANCE FLOAT,
+    OPENING_DATE DATE,
+    INTEREST_RATE FLOAT,
+    CURRENCY VARCHAR,
+    STATUS VARCHAR,
+    BRANCH_ID VARCHAR,
+    LAST_TRANSACTION_DATE DATE
+);
+
+-- Create fact_transaction
+CREATE TABLE BANK_DB.MODERN_SCHEMA.FACT_TRANSACTION (
+    TRANSACTION_ID VARCHAR,
+    ACCOUNT_ID VARCHAR,
+    TRANSACTION_DATE DATE,
+    AMOUNT FLOAT,
+    TRANSACTION_TYPE VARCHAR,
+    STATUS VARCHAR,
+    CHANNEL VARCHAR,
+    REFERENCE_NUMBER VARCHAR,
+    CURRENCY VARCHAR,
+    NOTES VARCHAR
+);
+
+-- Create fact_financial_product
+CREATE TABLE BANK_DB.MODERN_SCHEMA.FACT_FINANCIAL_PRODUCT (
+    PRODUCT_ID VARCHAR,
+    CUSTOMER_ID VARCHAR,
+    PRODUCT_TYPE VARCHAR,
+    PRODUCT_CATEGORY VARCHAR,
+    PRINCIPAL_AMOUNT FLOAT,
+    CURRENT_VALUE FLOAT,
+    INTEREST_RATE FLOAT,
+    START_DATE DATE,
+    END_DATE DATE,
+    STATUS VARCHAR,
+    RISK_LEVEL VARCHAR,
+    OFFICER_ID VARCHAR
+);
+------------------------------------------------------------------------------------------
+-----EMPLOYEE TABLE 
+INSERT INTO BANK_DB.MODERN_SCHEMA.DIM_EMPLOYEE
+SELECT DISTINCT
+    e.EMP_ID,
+    SPLIT_PART(TRIM(e.EMP_NM), ' ', 1) as FIRST_NAME,
+    SPLIT_PART(TRIM(e.EMP_NM), ' ', 2) as LAST_NAME,
+    TRY_TO_DATE(e.DOB, 'DD/MM/YYYY') as DATE_OF_BIRTH,
+    CASE UPPER(e.GNDR)
+        WHEN 'M' THEN 'Male'
+        WHEN 'MALE' THEN 'Male'
+        WHEN 'F' THEN 'Female'
+        WHEN 'FEMALE' THEN 'Female'
+        ELSE 'Unknown'
+    END as GENDER,
+    e.EMAIL,
+    e.DEPT_CD,
+    INITCAP(d.DEPT_NM) as DEPARTMENT_NAME,
+    CASE UPPER(e.STAT)
+        WHEN 'A' THEN 'Active'
+        WHEN 'ACTIVE' THEN 'Active'
+        WHEN 'ACT' THEN 'Active'
+        WHEN 'I' THEN 'Inactive'
+        WHEN 'INACTIVE' THEN 'Inactive'
+        WHEN 'T' THEN 'Terminated'
+        WHEN 'TERMINATED' THEN 'Terminated'
+        ELSE 'Unknown'
+    END as JOB_STATUS,
+    CASE WHEN e.SAL IS NULL THEN 0
+         WHEN e.SAL < 0 THEN 0
+         ELSE e.SAL
+    END as SALARY,
+    TRY_TO_DATE(e.JN_DT, 'DD/MM/YYYY') as JOIN_DATE,
+    e.MGR_ID
+FROM BANK_DB.PUBLIC.EMPLOYEES e
+LEFT JOIN (
+    SELECT DEPT_CD, MAX(DEPT_NM) as DEPT_NM
+    FROM BANK_DB.PUBLIC.DEPARTMENTS
+    GROUP BY DEPT_CD
+) d ON e.DEPT_CD = d.DEPT_CD
+WHERE e.EMP_ID IS NOT NULL;
+
+SELECT * FROM BANK_DB.MODERN_SCHEMA.DIM_EMPLOYEE LIMIT 5;
+
+--------CUSTOMER TABLE
+INSERT INTO BANK_DB.MODERN_SCHEMA.DIM_CUSTOMER
+SELECT DISTINCT
+    c.CUST_ID,
+    SPLIT_PART(TRIM(c.CUST_NM), ' ', 1) as FIRST_NAME,
+    SPLIT_PART(TRIM(c.CUST_NM), ' ', 2) as LAST_NAME,
+    TRY_TO_DATE(c.DOB, 'DD/MM/YYYY') as DATE_OF_BIRTH,
+    CASE UPPER(c.CNTRY)
+        WHEN 'US' THEN 'US'
+        WHEN 'USA' THEN 'US'
+        WHEN 'U.S.A' THEN 'US'
+        WHEN 'INDIA' THEN 'IN'
+        WHEN 'IND' THEN 'IN'
+        WHEN 'UK' THEN 'GB'
+        WHEN 'CAN' THEN 'CA'
+        WHEN 'MEX' THEN 'MX'
+        ELSE 'Unknown'
+    END as COUNTRY_CODE,
+    CASE WHEN c.PH_NUM IS NULL THEN 'Unknown'
+         ELSE '+1-'||c.PH_NUM
+    END as PHONE_NUMBER,
+    c.EMAIL,
+    CASE UPPER(c.KYC)
+        WHEN 'Y' THEN 'true'
+        WHEN 'YES' THEN 'true'
+        WHEN 'N' THEN 'false'
+        WHEN 'NO' THEN 'false'
+        ELSE 'false'
+    END as KYC_VERIFIED,
+    CASE UPPER(c.SEG)
+        WHEN 'RET' THEN 'Retail'
+        WHEN 'RETAIL' THEN 'Retail'
+        WHEN 'CORP' THEN 'Corporate'
+        WHEN 'CORPORATE' THEN 'Corporate'
+        WHEN 'HNI' THEN 'High Net Worth'
+        ELSE 'Unknown'
+    END as SEGMENT,
+    TRY_TO_DATE(c.JOINED_DT, 'DD/MM/YYYY') as JOINED_DATE,
+    CASE UPPER(c.STAT)
+        WHEN 'A' THEN 'Active'
+        WHEN 'ACTIVE' THEN 'Active'
+        WHEN 'I' THEN 'Inactive'
+        WHEN 'INACTIVE' THEN 'Inactive'
+        ELSE 'Unknown'
+    END as STATUS,
+    CASE UPPER(comp.STAT)
+        WHEN 'PASS' THEN 'Passed'
+        WHEN 'P' THEN 'Passed'
+        WHEN 'FAIL' THEN 'Failed'
+        WHEN 'F' THEN 'Failed'
+        WHEN 'PENDING' THEN 'Pending'
+        WHEN 'PEN' THEN 'Pending'
+        ELSE 'Not Reviewed'
+    END as COMPLIANCE_STATUS,
+    CASE WHEN comp.RISK_SCR IS NULL THEN 0
+         WHEN comp.RISK_SCR < 0 THEN 0
+         WHEN comp.RISK_SCR > 100 THEN 100
+         ELSE comp.RISK_SCR
+    END as RISK_SCORE
+FROM BANK_DB.PUBLIC.CUSTOMERS c
+LEFT JOIN (
+    SELECT CUST_ID, MAX(STAT) as STAT, MAX(RISK_SCR) as RISK_SCR
+    FROM BANK_DB.PUBLIC.COMPLIANCE
+    GROUP BY CUST_ID
+) comp ON c.CUST_ID = comp.CUST_ID
+WHERE c.CUST_ID IS NOT NULL;
+
+SELECT * FROM BANK_DB.MODERN_SCHEMA.DIM_CUSTOMER LIMIT 5;
+
+--------------FACT_ACCOUNT_INSERT----------------------------------------------
+INSERT INTO BANK_DB.MODERN_SCHEMA.FACT_ACCOUNT
+SELECT
+    a.ACCT_NUM,
+    a.CUST_ID,
+    CASE UPPER(a.ACCT_TYP)
+        WHEN 'SAV' THEN 'Savings'
+        WHEN 'SAVING' THEN 'Savings'
+        WHEN 'CHK' THEN 'Checking'
+        WHEN 'CURRENT' THEN 'Checking'
+        WHEN 'INV' THEN 'Investment'
+        WHEN 'INVEST' THEN 'Investment'
+        WHEN 'LON' THEN 'Loan'
+        WHEN 'LOAN' THEN 'Loan'
+        ELSE 'Unknown'
+    END as ACCOUNT_TYPE,
+    CASE WHEN a.BAL IS NULL THEN 0.0
+         WHEN a.BAL < 0 THEN 0.0
+         ELSE a.BAL
+    END as BALANCE,
+    TRY_TO_DATE(a.OPN_DT, 'DD/MM/YYYY') as OPENING_DATE,
+    CASE WHEN a.INT_RT IS NULL THEN 0.0
+         ELSE a.INT_RT
+    END as INTEREST_RATE,
+    CASE UPPER(a.CURR)
+        WHEN 'USD' THEN 'USD'
+        WHEN 'US DOLLAR' THEN 'USD'
+        WHEN 'EUR' THEN 'EUR'
+        WHEN 'GBP' THEN 'GBP'
+        ELSE 'USD'
+    END as CURRENCY,
+    CASE UPPER(a.STAT)
+        WHEN 'A' THEN 'Active'
+        WHEN 'ACTIVE' THEN 'Active'
+        WHEN 'I' THEN 'Inactive'
+        WHEN 'INACTIVE' THEN 'Inactive'
+        WHEN 'CLOSED' THEN 'Closed'
+        WHEN 'CLS' THEN 'Closed'
+        ELSE 'Unknown'
+    END as STATUS,
+    a.BR_CD,
+    TRY_TO_DATE(a.LAST_TXN, 'DD/MM/YYYY') as LAST_TRANSACTION_DATE
+FROM BANK_DB.PUBLIC.ACCOUNTS a
+WHERE a.ACCT_NUM IS NOT NULL;
+
+SELECT * FROM BANK_DB.MODERN_SCHEMA.FACT_ACCOUNT LIMIT 5;
+
+---------------------------fact_transaction----------------------------------------------
+INSERT INTO BANK_DB.MODERN_SCHEMA.FACT_TRANSACTION
+SELECT
+    t.TXN_ID,
+    t.ACCT_NUM,
+    TRY_TO_DATE(t.TXN_DT, 'DD/MM/YYYY') as TRANSACTION_DATE,
+    CASE WHEN t.AMT IS NULL THEN 0.0
+         ELSE t.AMT
+    END as AMOUNT,
+    CASE UPPER(t.TXN_TYP)
+        WHEN 'DEP' THEN 'Deposit'
+        WHEN 'DEPOSIT' THEN 'Deposit'
+        WHEN 'WIT' THEN 'Withdrawal'
+        WHEN 'WITHDRAWAL' THEN 'Withdrawal'
+        WHEN 'TRF' THEN 'Transfer'
+        WHEN 'TRANSFER' THEN 'Transfer'
+        ELSE 'Unknown'
+    END as TRANSACTION_TYPE,
+    CASE UPPER(t.STAT)
+        WHEN 'COM' THEN 'Completed'
+        WHEN 'COMPLETED' THEN 'Completed'
+        WHEN 'PEN' THEN 'Pending'
+        WHEN 'PENDING' THEN 'Pending'
+        WHEN 'FAIL' THEN 'Failed'
+        ELSE 'Unknown'
+    END as STATUS,
+    CASE UPPER(t.CHNL)
+        WHEN 'ATM' THEN 'ATM'
+        WHEN 'ONL' THEN 'Online'
+        WHEN 'ONLINE' THEN 'Online'
+        WHEN 'BRANCH' THEN 'Branch'
+        WHEN 'MOB' THEN 'Mobile'
+        ELSE 'Unknown'
+    END as CHANNEL,
+    COALESCE(t.REF_NUM, 'NO-REF') as REFERENCE_NUMBER,
+    CASE UPPER(t.CURR)
+        WHEN 'USD' THEN 'USD'
+        WHEN 'EUR' THEN 'EUR'
+        ELSE 'USD'
+    END as CURRENCY,
+    COALESCE(t.NOTES, 'No notes') as NOTES
+FROM BANK_DB.PUBLIC.TRANSACTIONS t
+WHERE t.TXN_ID IS NOT NULL;
+
+SELECT * FROM BANK_DB.MODERN_SCHEMA.FACT_TRANSACTION LIMIT 5;
+
+------------------------------fact_financial_product-------------------------------------
+
+INSERT INTO BANK_DB.MODERN_SCHEMA.FACT_FINANCIAL_PRODUCT
+
+-- LOANS
+SELECT
+    l.LOAN_ID as PRODUCT_ID,
+    l.CUST_ID,
+    'Loan' as PRODUCT_TYPE,
+    CASE UPPER(l.LOAN_TYP)
+        WHEN 'MTG' THEN 'Mortgage'
+        WHEN 'MORTGAGE' THEN 'Mortgage'
+        WHEN 'PER' THEN 'Personal'
+        WHEN 'PERSONAL' THEN 'Personal'
+        WHEN 'BUS' THEN 'Business'
+        WHEN 'BUSINESS' THEN 'Business'
+        WHEN 'AUTO' THEN 'Auto'
+        ELSE 'Other'
+    END as PRODUCT_CATEGORY,
+    COALESCE(l.PRIN_AMT, 0) as PRINCIPAL_AMOUNT,
+    COALESCE(l.OUTSTANDING, 0) as CURRENT_VALUE,
+    COALESCE(l.INT_RT, 0) as INTEREST_RATE,
+    TRY_TO_DATE(l.STRT_DT, 'DD/MM/YYYY') as START_DATE,
+    TRY_TO_DATE(l.END_DT, 'DD/MM/YYYY') as END_DATE,
+    CASE UPPER(l.STAT)
+        WHEN 'ACT' THEN 'Active'
+        WHEN 'ACTIVE' THEN 'Active'
+        WHEN 'CLS' THEN 'Closed'
+        WHEN 'CLOSED' THEN 'Closed'
+        WHEN 'DEF' THEN 'Default'
+        WHEN 'DEFAULT' THEN 'Default'
+        ELSE 'Unknown'
+    END as STATUS,
+    'Medium' as RISK_LEVEL,
+    l.OFFICER_ID
+FROM BANK_DB.PUBLIC.LOANS l
+WHERE l.LOAN_ID IS NOT NULL
+
+UNION ALL
+
+-- INVESTMENTS
+SELECT
+    i.INV_ID as PRODUCT_ID,
+    i.CUST_ID,
+    'Investment' as PRODUCT_TYPE,
+    CASE UPPER(i.INV_TYP)
+        WHEN 'STK' THEN 'Stock'
+        WHEN 'STOCK' THEN 'Stock'
+        WHEN 'BND' THEN 'Bond'
+        WHEN 'BOND' THEN 'Bond'
+        WHEN 'MF' THEN 'Mutual Fund'
+        WHEN 'MUTUAL FUND' THEN 'Mutual Fund'
+        WHEN 'ETF' THEN 'ETF'
+        ELSE 'Other'
+    END as PRODUCT_CATEGORY,
+    COALESCE(i.AMT_INVST, 0) as PRINCIPAL_AMOUNT,
+    COALESCE(i.CURR_VAL, 0) as CURRENT_VALUE,
+    0.0 as INTEREST_RATE,
+    TRY_TO_DATE(i.STRT_DT, 'DD/MM/YYYY') as START_DATE,
+    TRY_TO_DATE(i.MTRTY_DT, 'DD/MM/YYYY') as END_DATE,
+    CASE UPPER(i.STAT)
+        WHEN 'ACT' THEN 'Active'
+        WHEN 'ACTIVE' THEN 'Active'
+        WHEN 'MAT' THEN 'Matured'
+        WHEN 'MATURED' THEN 'Matured'
+        WHEN 'PEN' THEN 'Pending'
+        ELSE 'Unknown'
+    END as STATUS,
+    CASE UPPER(i.RISK_LVL)
+        WHEN 'L' THEN 'Low'
+        WHEN 'LOW' THEN 'Low'
+        WHEN 'M' THEN 'Medium'
+        WHEN 'MEDIUM' THEN 'Medium'
+        WHEN 'H' THEN 'High'
+        WHEN 'HIGH' THEN 'High'
+        ELSE 'Unknown'
+    END as RISK_LEVEL,
+    i.ADVISOR_ID
+FROM BANK_DB.PUBLIC.INVESTMENTS i
+WHERE i.INV_ID IS NOT NULL;
+
+SELECT * FROM BANK_DB.MODERN_SCHEMA.FACT_FINANCIAL_PRODUCT LIMIT 5;
+
+----------------------------------------------VALIDATION--------------------------------------------------
+-- Row count for all modern tables
+SELECT 'DIM_EMPLOYEE' as table_name, COUNT(*) as total_rows 
+FROM BANK_DB.MODERN_SCHEMA.DIM_EMPLOYEE
+UNION ALL
+SELECT 'DIM_CUSTOMER', COUNT(*) 
+FROM BANK_DB.MODERN_SCHEMA.DIM_CUSTOMER
+UNION ALL
+SELECT 'FACT_ACCOUNT', COUNT(*) 
+FROM BANK_DB.MODERN_SCHEMA.FACT_ACCOUNT
+UNION ALL
+SELECT 'FACT_TRANSACTION', COUNT(*) 
+FROM BANK_DB.MODERN_SCHEMA.FACT_TRANSACTION
+UNION ALL
+SELECT 'FACT_FINANCIAL_PRODUCT', COUNT(*) 
+FROM BANK_DB.MODERN_SCHEMA.FACT_FINANCIAL_PRODUCT;
+
+-- Clean account types
+SELECT DISTINCT ACCOUNT_TYPE 
+FROM BANK_DB.MODERN_SCHEMA.FACT_ACCOUNT;
+
+-- Clean statuses
+SELECT DISTINCT JOB_STATUS 
+FROM BANK_DB.MODERN_SCHEMA.DIM_EMPLOYEE;
+
+-- Clean country codes
+SELECT DISTINCT COUNTRY_CODE 
+FROM BANK_DB.MODERN_SCHEMA.DIM_CUSTOMER;
+
+-- Error log summary
+SELECT ERROR_TYPE, COUNT(*) as total
+FROM BANK_DB.PUBLIC.ERROR_LOG
+GROUP BY ERROR_TYPE;
